@@ -1,0 +1,243 @@
+#!/bin/sh
+# Lasso: manage the always-on sidebar across every tmux window.
+#
+#   toggle.sh                -> toggle on/off globally (bound to prefix + g)
+#   toggle.sh enable         -> turn on: start the reconciler daemon + show sidebars
+#   toggle.sh disable        -> turn off: stop the daemon, remove sidebars
+#   toggle.sh startup        -> enable on tmux start (default on)
+#   toggle.sh reconcile      -> internal: one idempotent pass (the daemon calls this)
+#   toggle.sh add-window <id>-> internal: add a sidebar to one window (switch.py)
+#   toggle.sh sync-width <p> -> internal: adopt pane p's width as the global width
+#
+# A sidebar pane is tagged with the pane option @lasso_pane=1 so we can find/skip it.
+# Lifecycle is owned by ONE reconciler (daemon.py): it polls and calls `reconcile`
+# every tick, so a missing or duplicated sidebar self-heals. No tmux hooks, no
+# per-pane leader election -- that scheme is what made the old sidebar race, vanish
+# and duplicate. State: global option @lasso_on = on|off, @lasso_mobile = 1 when a
+# phone-width client is active (sidebar hidden; the status bar is left untouched).
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PANEL="$HERE/panel.py"
+DAEMON="$HERE/daemon.py"
+MIN_SIDEBAR_WIDTH="${LASSO_MIN_WIDTH:-18}"   # floor and default width
+
+is_uint() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac
+}
+
+desktop_width() {
+  v="$1"
+  is_uint "$v" || v="$MIN_SIDEBAR_WIDTH"
+  [ "$v" -lt "$MIN_SIDEBAR_WIDTH" ] && v="$MIN_SIDEBAR_WIDTH"
+  printf '%s\n' "$v"
+}
+
+pane_width() {  # $1 = window id
+  if is_uint "${LASSO_WIDTH:-}"; then
+    desktop_width "$LASSO_WIDTH"
+    return 0
+  fi
+  saved=$(tmux show -gv @lasso_width 2>/dev/null)
+  if is_uint "$saved"; then
+    desktop_width "$saved"
+    return 0
+  fi
+  desktop_width "$MIN_SIDEBAR_WIDTH"
+}
+
+is_on() { [ "$(tmux show -gv @lasso_on 2>/dev/null)" = "on" ]; }
+is_mobile() { [ "$(tmux show -gv @lasso_mobile 2>/dev/null)" = "1" ]; }
+
+# --- mobile mode ------------------------------------------------------------
+# On a phone-width client the sidebar is dropped entirely so the work pane goes
+# fullscreen -- that's all. We deliberately DON'T restyle the status bar: the old
+# save/restore of the user's ~12 global status options was the last fragile
+# corruptor (it once blanked the bar on macOS). Your normal tmux bar stays as-is;
+# on a phone (@lasso_mobile=1) tapping the top status line opens switch.py via the
+# MouseDown1Status binding in lasso.tmux.
+# Below this client width the sidebar is dropped. Tune via @lasso_mobile_width
+# (or LASSO_MOBILE_WIDTH env); a phone over SSH (Termius landscape ~79 cols)
+# should fall under it, a full desktop terminal should not.
+mobile_width() {
+  is_uint "${LASSO_MOBILE_WIDTH:-}" && { printf '%s\n' "$LASSO_MOBILE_WIDTH"; return 0; }
+  saved=$(tmux show -gv @lasso_mobile_width 2>/dev/null)
+  is_uint "$saved" && { printf '%s\n' "$saved"; return 0; }
+  printf '90\n'   # default: catches a phone in landscape (~79-89 cols); a real desktop terminal is wider
+}
+
+enter_mobile() {  # phone: drop the sidebars; the flag routes status taps to switch.py
+  is_mobile && return 0
+  tmux set -g @lasso_mobile 1
+  kill_all
+}
+
+exit_mobile() {
+  is_mobile || return 0
+  tmux set -g @lasso_mobile 0
+}
+
+# --- sidebar panes ----------------------------------------------------------
+add_window() {  # $1 = window id
+  win="$1"
+  width=$(pane_width "$win")
+  is_on || return 0
+  is_mobile && return 0   # phone: no sidebar, the switch popup replaces it
+  [ -n "$win" ] || return 0
+  # already has a sidebar pane?
+  if tmux list-panes -t "$win" -F '#{@lasso_pane}' 2>/dev/null | grep -q '^1$'; then
+    return 0
+  fi
+  pane=$(tmux split-window -hbf -l "$width" -d -t "$win" -P -F '#{pane_id}' \
+           "exec '$PANEL'" 2>/dev/null) || return 0
+  [ -n "$pane" ] && tmux set -p -t "$pane" @lasso_pane 1 2>/dev/null
+}
+
+resize_window_to() {  # $1 = window id, $2 = width
+  win="$1"
+  width="$2"
+  is_on || return 0
+  [ -n "$win" ] || return 0
+  is_uint "$width" || return 0
+  pane=$(tmux list-panes -t "$win" -F '#{pane_id} #{@lasso_pane}' 2>/dev/null \
+    | awk '$2==1 {print $1; exit}')
+  [ -n "$pane" ] || return 0
+  tmux resize-pane -t "$pane" -x "$width" 2>/dev/null || true
+}
+
+resize_window() {  # $1 = window id
+  win="$1"
+  resize_window_to "$win" "$(pane_width "$win")"
+}
+
+kill_all() {
+  tmux list-panes -a -F '#{pane_id} #{@lasso_pane}' 2>/dev/null \
+    | awk '$2==1 {print $1}' \
+    | while IFS= read -r p; do tmux kill-pane -t "$p" 2>/dev/null; done
+}
+
+# --- reconcile (the one writer) ---------------------------------------------
+narrowest_client() {  # width of the smallest attached client, or empty if none
+  tmux list-clients -F '#{client_width}' 2>/dev/null \
+    | grep -E '^[0-9]+$' | sort -n | head -n1
+}
+
+reconcile_mobile() {
+  # Mobile follows the narrowest attached client: a phone over SSH falls under
+  # the threshold, a desktop doesn't. Only flip on a real crossing.
+  # ponytail: @lasso_mobile is one global flag; a phone AND a desktop attached
+  # at once forces mobile for both (panes are window-global, not per-client).
+  w=$(narrowest_client)
+  is_uint "$w" || return 0    # nothing attached: leave the current mode as-is
+  if [ "$w" -lt "$(mobile_width)" ]; then
+    is_mobile || enter_mobile
+  else
+    is_mobile && exit_mobile
+  fi
+}
+
+reconcile_sidebars() {
+  # Desktop steady state: every window has exactly one sidebar pane at the
+  # current width. Idempotent -- a gap is filled, a duplicate (briefly created
+  # by a race) is killed keeping the lowest pane id, and a window left with only
+  # a sidebar (its work pane closed) loses it so the window closes as expected.
+  tmux list-windows -a -F '#{window_id}' 2>/dev/null | while IFS= read -r win; do
+    [ -n "$win" ] || continue
+    work=$(tmux list-panes -t "$win" -F '#{@lasso_pane}' 2>/dev/null \
+           | awk '$1!="1"{n++} END{print n+0}')
+    sidebars=$(tmux list-panes -t "$win" -F '#{pane_id} #{@lasso_pane}' 2>/dev/null \
+               | awk '$2=="1"{print $1}')
+    if [ "$work" -eq 0 ]; then
+      printf '%s\n' "$sidebars" | while IFS= read -r p; do
+        [ -n "$p" ] && tmux kill-pane -t "$p" 2>/dev/null
+      done
+      continue
+    fi
+    keeper=$(printf '%s\n' "$sidebars" | sed 's/%//' | grep -E '^[0-9]+$' | sort -n | head -n1)
+    if [ -z "$keeper" ]; then
+      add_window "$win"
+    else
+      keeper="%$keeper"
+      printf '%s\n' "$sidebars" | while IFS= read -r p; do
+        [ -n "$p" ] && [ "$p" != "$keeper" ] && tmux kill-pane -t "$p" 2>/dev/null
+      done
+      resize_window "$win"
+    fi
+  done
+}
+
+reconcile() {
+  is_on || return 0
+  reconcile_mobile
+  if is_mobile; then
+    kill_all       # phone: no sidebar, the switch popup replaces it
+    return 0
+  fi
+  reconcile_sidebars
+}
+
+sync_width() {  # $1 = source lasso pane id
+  is_on || return 0
+  is_mobile && return 0
+  pane="$1"
+  [ -n "$pane" ] || return 0
+  [ "$(tmux display-message -p -t "$pane" '#{@lasso_pane}' 2>/dev/null)" = "1" ] || return 0
+  width=$(tmux display-message -p -t "$pane" '#{pane_width}' 2>/dev/null)
+  is_uint "$width" || return 0
+  width=$(desktop_width "$width")
+  tmux set -g @lasso_width "$width"
+  start_daemon    # self-heal: make sure the reconciler is alive
+  reconcile       # one writer applies the new width everywhere
+}
+
+# --- legacy hook purge ------------------------------------------------------
+remove_hooks() {
+  # Lasso no longer installs tmux hooks; the reconciler daemon polls instead.
+  # We still unbind the [42] hooks here so a reload from an older, hook-driven
+  # build purges that stale behaviour from the running tmux server.
+  tmux set-hook -gu 'after-new-window[42]'  2>/dev/null
+  tmux set-hook -gu 'after-new-session[42]' 2>/dev/null
+  tmux set-hook -gu 'after-select-window[42]' 2>/dev/null
+  tmux set-hook -gu 'client-resized[42]' 2>/dev/null
+  tmux set-hook -gu 'client-attached[42]' 2>/dev/null
+  tmux set-hook -gu 'after-resize-pane[42]' 2>/dev/null
+  tmux set-hook -gu 'after-select-pane[42]' 2>/dev/null
+  tmux set-hook -gu 'after-split-window[42]' 2>/dev/null
+}
+
+start_daemon() {
+  # Detached singleton; daemon.py's flock makes a duplicate start a no-op, so
+  # it's safe to call this from every enable/sync without first checking.
+  nohup python3 "$DAEMON" >/dev/null 2>&1 </dev/null &
+}
+
+enable() {
+  tmux set -g @lasso_on on
+  remove_hooks     # purge any stale [42] hooks left by an older hook-driven build
+  start_daemon
+  reconcile        # instant: don't wait for the daemon's first tick
+}
+
+disable() {
+  tmux set -g @lasso_on off    # the daemon's loop sees this and exits
+  remove_hooks
+  tmux set -g @lasso_mobile 0
+  kill_all
+}
+
+case "${1:-toggle}" in
+  enable)      enable ;;
+  disable)     disable ;;
+  startup)     enable ;;
+  reconcile)   reconcile ;;
+  add-window)  add_window "$2" ;;
+  sync-width)  sync_width "$2" ;;
+  toggle|"")   if is_on; then disable; else enable; fi ;;
+  __selftest)  # pure smoke checks, no tmux side effects (run by test_toggle.py)
+    fail=0
+    [ "$(desktop_width 5)" = "$MIN_SIDEBAR_WIDTH" ] \
+      || { echo "desktop_width: width floor broken" >&2; fail=1; }
+    [ "$(desktop_width 99)" = "99" ] \
+      || { echo "desktop_width: valid width should pass through" >&2; fail=1; }
+    [ "$fail" = 0 ] && echo "toggle.sh selftest ok"
+    exit "$fail" ;;
+  *)           exit 0 ;;
+esac
