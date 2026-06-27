@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lasso sidebar: the live, clickable sidebar pane -- a dumb renderer.
+"""tmux-lasso sidebar: the live, clickable sidebar pane -- a dumb renderer.
 
 Runs inside a narrow tmux pane (one per window). Every refresh it repaints the
 agent list from render.build_frame(); a left click on an agent row switches the
@@ -9,7 +9,7 @@ Lifecycle (which windows get a sidebar, dedupe, resize, desktop/mobile) is
 owned by the single reconciler in daemon.py
 -- this process only draws and handles clicks, so there's no per-pane
 self-management to race over. If the reconciler kills this pane (window closed,
-duplicate, lasso off), the process simply dies with it.
+duplicate, tmux-lasso off), the process simply dies with it.
 """
 import os
 import subprocess
@@ -92,7 +92,7 @@ def open_switch():
 
 
 def sync_sidebar_width():
-    """Copy this sidebar pane's current width to every Lasso sidebar."""
+    """Copy this sidebar pane's current width to every tmux-lasso sidebar."""
     try:
         subprocess.Popen(
             [TOGGLE, "sync-width", PANE],
@@ -105,7 +105,7 @@ def sync_sidebar_width():
 
 def main():
     if not PANE:
-        sys.stderr.write("Lasso: not inside tmux\n")
+        sys.stderr.write("tmux-lasso: not inside tmux\n")
         return
 
     def hot_reload(sources):
@@ -131,7 +131,7 @@ def main():
         except Exception:
             # A bad reload (e.g. a runtime error in freshly-edited render code)
             # must not take the pane down -- show the last good frame instead.
-            return list(last_rows) or [(" lasso: reloading…", None)]
+            return list(last_rows) or [(" tmux-lasso: reloading…", None)]
 
     def handle_action(target, x, _y):
         if target[0] == "buttons":
@@ -168,5 +168,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        sys.stderr.write(f"Lasso panel error: {e}\n")
+        sys.stderr.write(f"tmux-lasso panel error: {e}\n")
         time.sleep(3)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lasso: subscription usage for the sidebar footer.
+"""tmux-lasso: subscription usage for the sidebar footer.
 
 Both Claude Code and Codex expose a "session" (5-hour) and a weekly rate-limit
 window as a percent used, via the same endpoints their official CLIs/menubar
@@ -9,7 +9,7 @@ apps poll:
   codex  -> GET chatgpt.com/backend-api/wham/usage  (ChatGPT bearer)
 
 The reconciler daemon is the SOLE fetcher: every TTL (or when the footer's sync
-button sets @lasso_usage_force) it runs `usage.py fetch-once` as a detached
+button sets @tmux_lasso_usage_force) it runs `usage.py fetch-once` as a detached
 subprocess, which writes the latest values to a small temp file. Every sidebar
 and the switcher just read that file via snapshot() -- no per-process polling,
 threads or locks. Running the fetch out-of-process means a wedged network call
@@ -27,15 +27,15 @@ import urllib.request
 import tmux_api
 
 # Auto-refresh interval. The 5h/weekly windows move slowly, so 60s is plenty;
-# override with LASSO_USAGE_TTL (seconds). Tapping the footer forces a refresh
+# override with TMUX_LASSO_USAGE_TTL (seconds). Tapping the footer forces a refresh
 # regardless. Floored at 10s so a tiny value can't hammer the endpoints.
 try:
-    TTL = max(10.0, float(os.environ.get("LASSO_USAGE_TTL", "60")))
+    TTL = max(10.0, float(os.environ.get("TMUX_LASSO_USAGE_TTL", "60")))
 except ValueError:
     TTL = 60.0
 TIMEOUT = 8                     # per-request network timeout
-CACHE = os.path.join(tempfile.gettempdir(), "lasso-usage.json")
-FORCE_OPT = "@lasso_usage_force"   # footer tap sets this; the daemon acts on it
+CACHE = os.path.join(tempfile.gettempdir(), "tmux-lasso-usage.json")
+FORCE_OPT = "@tmux_lasso_usage_force"   # footer tap sets this; the daemon acts on it
 
 
 # --- token sources ----------------------------------------------------------
@@ -112,7 +112,7 @@ def fetch_codex():
     d = _get_json(
         "https://chatgpt.com/backend-api/wham/usage",
         {"Authorization": f"Bearer {tok}",
-         "chatgpt-account-id": acc, "User-Agent": "lasso"},
+         "chatgpt-account-id": acc, "User-Agent": "tmux-lasso"},
     )
     rl = d.get("rate_limit") or {}
     pw = rl.get("primary_window") or {}
@@ -150,7 +150,7 @@ def age():
 
 def force_refresh():
     """Footer sync button: flag the daemon to fetch now. The daemon reads and
-    clears @lasso_usage_force next tick and applies its own min-gap, so a stray
+    clears @tmux_lasso_usage_force next tick and applies its own min-gap, so a stray
     double-tap can't hammer the endpoints."""
     tmux_api.run("set", "-g", FORCE_OPT, "1")
 
@@ -170,20 +170,20 @@ def fetch_once():
     A non-blocking flock makes a second fetch a no-op while one is in flight, so
     a forced tap landing on top of a periodic fetch can't lose-update it (each
     process starts from its own read_cache() snapshot)."""
-    lock = open(CACHE + ".lock", "w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return                       # another fetch is already running
-    data = dict(read_cache())
-    c = _safe(fetch_claude)
-    x = _safe(fetch_codex)
-    if c:
-        data["claude"] = c
-    if x:
-        data["codex"] = x
-    if c or x:
-        _write_cache(data)
+    with open(CACHE + ".lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return                   # another fetch is already running
+        data = dict(read_cache())
+        c = _safe(fetch_claude)
+        x = _safe(fetch_codex)
+        if c:
+            data["claude"] = c
+        if x:
+            data["codex"] = x
+        if c or x:
+            _write_cache(data)
 
 
 if __name__ == "__main__":

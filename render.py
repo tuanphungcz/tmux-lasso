@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lasso: build the sidebar frame for tmux windows.
+"""tmux-lasso: build the sidebar frame for tmux windows.
 
 Model:
   - a "space" is one git repository (the toplevel of an agent pane's cwd).
@@ -74,6 +74,7 @@ PILL = {
     "idle":    (bg(40, 50, 42),  fg(156, 204, 122),        "idle"),
     "unknown": (bg(40, 44, 50),  fg(140, 147, 156),        "idle"),
 }
+AGENT_SHORT = {"codex": "co", "claude": "cc", "pi": "pi"}
 
 # path -> (space_key, label, branch, expiry); git is cheap but not per-frame.
 _GIT = {}
@@ -147,6 +148,20 @@ def pill(state, seconds, row_bg=""):
         label = f"{label} {fmt_age(seconds)}".strip()
     text = f" {label} "
     return (f"{bg}{fg}{text}{RESET}{row_bg}", len(text))
+
+
+def status_chip(state, row_bg=""):
+    """Static state chip for group/window headers."""
+    bgc, fgc, label = PILL.get(state, PILL["unknown"])
+    label = label or state or "idle"
+    text = f" {label} "
+    return (f"{bgc}{fgc}{text}{RESET}{row_bg}", len(text))
+
+
+def status_pill(state, ts, now, row_bg=""):
+    if state in TIMED_STATES and ts is not None:
+        return pill(state, now - ts, row_bg)
+    return status_chip(state, row_bg)
 
 
 def compact_state(state, seconds, row_bg=""):
@@ -400,15 +415,221 @@ def window_target(session, win_index, panes):
     return ("agent", session, win_index, pane["pane_id"]) if pane else None
 
 
+def window_space(session, window, panes, members):
+    """Folder/repo metadata for a tmux window.
+
+    Agent panes already carry their resolved git repo. Empty/new shell tabs use
+    their work pane cwd, so a new tab opened inside TextCut groups with the
+    existing TextCut agents instead of floating as an unrelated shell window.
+    """
+    if members:
+        m = members[0]
+        return m["space"], m["space_label"], m["branch"]
+    pane = window_pane(session, window["win_index"], panes)
+    if pane and pane.get("path"):
+        return space_of(pane["path"])
+    label = window.get("win_name") or "window"
+    return f"window:{window.get('window_id') or window['win_index']}", label, ""
+
+
+def _space_groups(session, windows, by_window, panes):
+    groups, by_key = [], {}
+    for w in sorted(windows, key=lambda m: int(m["win_index"] or 0)):
+        members = sort_agents(by_window.get(w["win_index"], []))
+        key, label, branch = window_space(session, w, panes, members)
+        entry = {"window": w, "members": members}
+        group = by_key.get(key)
+        if not group:
+            group = {"key": key, "label": label, "branch": branch, "entries": []}
+            by_key[key] = group
+            groups.append(group)
+        if not group.get("branch") and branch:
+            group["branch"] = branch
+        group["entries"].append(entry)
+    return groups
+
+
+def _window_child_label(window, members):
+    if members:
+        return window.get("win_name") or (
+            members[0]["agent"] if len(members) == 1 else f"{len(members)} agents"
+        )
+    return window.get("win_name") or "shell"
+
+
+def _agent_label(member):
+    summary = (member.get("summary") or "").strip()
+    agent = member.get("agent") or "agent"
+    short = AGENT_SHORT.get(agent, agent)
+    if not summary:
+        return short
+    if summary.lower().startswith(f"{agent.lower()}:") or summary.lower().startswith(f"{short.lower()}:"):
+        return summary
+    return f"{short}: {summary}"
+
+
+def _aggregate_status(entries):
+    members = [
+        m
+        for e in entries
+        for m in e.get("members", [])
+        if m.get("state") in STATES
+    ]
+    if not members:
+        return "", None
+    # Highest-priority state wins; ties use the oldest timestamp so the header
+    # shows the longest-running active state in that workspace.
+    m = max(
+        members,
+        key=lambda x: (
+            STATES.get(x.get("state"), STATES["unknown"])[1],
+            -(x.get("ts") or 0),
+        ),
+    )
+    return m.get("state"), m.get("ts")
+
+
+def _right_meta(_branch, status, now, row_bg, branch_style=BRANCH_COL):
+    right = []
+    state, ts = status if status else ("", None)
+    if state:
+        right.append(status_pill(state, ts, now, row_bg))
+    return right
+
+
+def _space_header_row(width, label, branch, current, status=None, now=0):
+    # Workspace header is a grouping label, not a selectable row — never
+    # highlight it so it doesn't look "selected" alongside the active tab.
+    col0 = seg(" ")
+    right = _right_meta(truncate(branch, max(3, width // 2)), status, now, "")
+    fixed = col0[1] + 2 + sum(v for _, v in right) + 1
+    budget = max(1, width - fixed)
+    left = [
+        col0,
+        seg("▾ ", ACCENT if current else DIM),
+        seg(truncate(label, budget), BOLD),
+    ]
+    return compose(width, left, right)
+
+
+def _task_row(width, idx, label, current, target, prefix="", status=None, now=0):
+    row_bg = HILITE if current else ""
+    col0 = (f"{ACCENT}{BAR}{RESET}{row_bg}", 1) if current else seg(" ", "", row_bg)
+    idx_style = (ACCENT + BOLD) if current else (DIM + BOLD)
+    right = _right_meta("", status, now, row_bg)
+    fixed = col0[1] + len(prefix) + len(idx) + 1 + sum(v for _, v in right) + 1
+    if status and width - fixed < 2:
+        state, ts = status
+        right = [compact_state(state, now - ts if ts is not None else 0, row_bg)]
+        fixed = col0[1] + len(prefix) + len(idx) + 1 + sum(v for _, v in right) + 1
+    if status and width - fixed < 0:
+        right = []
+        fixed = col0[1] + len(prefix) + len(idx) + 1 + 1
+    budget = max(0, width - fixed)
+    left = [col0]
+    if prefix:
+        left.append(seg(prefix, DIM, row_bg))
+    left += [
+        seg(idx, idx_style, row_bg),
+        seg(" ", "", row_bg),
+        seg(truncate(label, budget), BOLD if current else "", row_bg),
+    ]
+    return compose(width, left, right, row_bg=row_bg), target
+
+
 def _win_header_row(width, col0, idx, label, branch,
-                    idx_style, label_style, branch_style, row_bg):
+                    idx_style, label_style, branch_style, row_bg, prefix="", status=None, now=0):
     """One window row: [col0][idx] [label] ....... [branch]. Shared by the
     empty-window and agent-header branches so the width-budget math lives once."""
-    right = [seg(truncate(branch, max(3, width // 2)), branch_style, row_bg)] if branch else []
-    budget = max(1, width - 2 - len(idx) - sum(v for _, v in right) - 1)
-    left = [col0, seg(idx, idx_style, row_bg), seg(" ", "", row_bg),
-            seg(truncate(label, budget), label_style, row_bg)]
+    right = _right_meta(truncate(branch, max(3, width // 2)), status, now, row_bg, branch_style)
+    fixed = col0[1] + len(prefix) + len(idx) + 1 + sum(v for _, v in right) + 1
+    budget = max(1, width - fixed)
+    left = [col0]
+    if prefix:
+        left.append(seg(prefix, DIM, row_bg))
+    left += [seg(idx, idx_style, row_bg), seg(" ", "", row_bg),
+             seg(truncate(label, budget), label_style, row_bg)]
     return compose(width, left, right, row_bg=row_bg)
+
+
+def _add_window_block(rows, width, session, now, window, members, panes, grouped=False):
+    def add(line, target=None):
+        rows.append((line, target))
+
+    current = window["win_current"]
+    idx = window["win_index"]
+    target = window_target(session, idx, panes)
+    row_bg = HILITE if current else ""
+    col0 = (f"{ACCENT}{BAR}{RESET}{row_bg}", 1) if current else seg(" ", "", row_bg)
+    prefix = "  " if grouped else ""
+
+    if not members:
+        # Empty window: still show where it is. Inside a space group the folder
+        # is already in the group header, so the child row uses the tab/window
+        # name instead of repeating the same project label.
+        if grouped:
+            label, branch = _window_child_label(window, members), ""
+        else:
+            pane = window_pane(session, idx, panes)
+            if pane and pane.get("path"):
+                _, label, branch = space_of(pane["path"])
+            else:
+                label, branch = (window["win_name"] or "window"), ""
+        add(_win_header_row(width, col0, idx, label, branch,
+                            FAINT + BOLD, FAINT, FAINT, "", prefix), target)
+        if not grouped:
+            add("")
+        return
+
+    if grouped and len(members) == 1:
+        m = members[0]
+        label = _agent_label(m)
+        mt = ("agent", m["session"], m["win_index"], m["pane_id"])
+        line, mt = _task_row(width, idx, label, current, mt, prefix, (m["state"], m.get("ts")), now)
+        add(line, mt)
+        return
+
+    # Window header: either the repo label (standalone) or the tab label under a
+    # repo/folder group.
+    a = members[0]
+    label = _window_child_label(window, members) if grouped else a["space_label"]
+    branch = "" if grouped else a["branch"]
+    status = _aggregate_status([{"members": members}])
+    idx_style = (ACCENT + BOLD) if current else (DIM + BOLD)
+    add(_win_header_row(width, col0, idx, label, branch,
+                        idx_style, BOLD if current else "", BRANCH_COL, row_bg, prefix, status, now), target)
+
+    # Agents nested under the window via tree connectors.
+    last = len(members) - 1
+    # When a tab holds 2+ agents, letter them A,B,C… (in this list order) so
+    # each pane is addressable as tab+letter, e.g. the switcher's "kill 2C".
+    lettered = len(members) > 1
+    for i, m in enumerate(members):
+        visible = m["visible"]
+        c_bg = HILITE if current else ""
+        conn = ELBOW if i == last else TEE
+        indent = "   " if grouped else " "
+        right = _right_meta("", (m["state"], m.get("ts")), now, c_bg)
+        fixed = len(indent) + len(conn) + 1 + sum(v for _, v in right) + 1
+        if width - fixed < 2:
+            right = [compact_state(m["state"], now - m["ts"] if m.get("ts") is not None else 0, c_bg)]
+            fixed = len(indent) + len(conn) + 1 + sum(v for _, v in right) + 1
+        if width - fixed < 0:
+            right = []
+            fixed = len(indent) + len(conn) + 1 + 1
+        budget = max(1, width - fixed)
+        label = f"{chr(65 + i)} {_agent_label(m)}" if lettered else _agent_label(m)
+        nm = truncate(label, budget)
+        left = [
+            seg(indent, "", c_bg),
+            seg(conn, (ACCENT if visible else DIM), c_bg),
+            seg(" ", "", c_bg),
+            seg(nm, (BOLD if visible else ""), c_bg),
+        ]
+        mt = ("agent", m["session"], m["win_index"], m["pane_id"])
+        add(compose(width, left, right, row_bg=c_bg), mt)
+    if not grouped:
+        add("")
 
 
 def _window_rows(width, session, now, windows, by_window, panes):
@@ -417,64 +638,22 @@ def _window_rows(width, session, now, windows, by_window, panes):
     two render identically. target for a window/agent row is
     ("agent", session, win_index, pane_id); blank spacer rows have target None."""
     rows = []
+    groups = _space_groups(session, windows, by_window, panes)
 
-    def add(line, target=None):
-        rows.append((line, target))
-
-    for w in sorted(windows, key=lambda m: int(m["win_index"] or 0)):
-        members = sort_agents(by_window.get(w["win_index"], []))
-        current = w["win_current"]
-        idx = w["win_index"]
-        target = window_target(session, idx, panes)
-        row_bg = HILITE if current else ""
-        col0 = (f"{ACCENT}{BAR}{RESET}{row_bg}", 1) if current else seg(" ", "", row_bg)
-
-        if not members:
-            # empty window: still show where it is — the cwd's repo folder on
-            # the left and the git branch on the right, same layout as an agent
-            # header but rendered faint so it reads as having no agent.
-            pane = window_pane(session, idx, panes)
-            if pane and pane.get("path"):
-                _, label, branch = space_of(pane["path"])
-            else:
-                label, branch = (w["win_name"] or "window"), ""
-            add(_win_header_row(width, col0, idx, label, branch,
-                                FAINT + BOLD, FAINT, FAINT, ""), target)
-            add("")
-            continue
-
-        # window header: <idx> <repo> ............ ⎇ branch
-        a = members[0]
-        idx_style = (ACCENT + BOLD) if current else (DIM + BOLD)
-        add(_win_header_row(width, col0, idx, a["space_label"], a["branch"],
-                            idx_style, BOLD if current else "", BRANCH_COL, row_bg), target)
-
-        # agents nested under the window via tree connectors.
-        last = len(members) - 1
-        # When a tab holds 2+ agents, letter them A,B,C… (in this list order) so
-        # each pane is addressable as tab+letter, e.g. the switcher's "kill 2C".
-        lettered = len(members) > 1
-        for i, m in enumerate(members):
-            visible = m["visible"]
-            c_bg = HILITE if current else ""
-            conn = ELBOW if i == last else TEE
-            chip = pill(m["state"], now - m["ts"], c_bg)
-            # On a tight pane the full pill won't fit alongside a readable name;
-            # fall back to a bare state dot so the row never overflows/wraps.
-            if width - 5 - chip[1] < 2:
-                chip = compact_state(m["state"], now - m["ts"], c_bg)
-            budget = max(1, width - 5 - chip[1])
-            label = f"{chr(65 + i)} {m['agent']}" if lettered else m["agent"]
-            nm = truncate(label, budget)
-            left = [
-                seg(" ", "", c_bg),
-                seg(conn, (ACCENT if visible else DIM), c_bg),
-                seg(" ", "", c_bg),
-                seg(nm, (BOLD if visible else ""), c_bg),
-            ]
-            mt = ("agent", m["session"], m["win_index"], m["pane_id"])
-            add(compose(width, left, [chip], row_bg=c_bg), mt)
-        add("")
+    for g in groups:
+        current = any(e["window"]["win_current"] for e in g["entries"])
+        rows.append((
+            _space_header_row(
+                width, g["label"], g.get("branch", ""),
+                current, None, now,
+            ),
+            None,
+        ))
+        for e in g["entries"]:
+            _add_window_block(
+                rows, width, session, now, e["window"], e["members"], panes, grouped=True
+            )
+        rows.append(("", None))
 
     while rows and rows[-1][0] == "":
         rows.pop()

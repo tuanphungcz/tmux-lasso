@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared terminal UI runtime for Lasso entrypoints."""
+"""Shared terminal UI runtime for tmux-lasso entrypoints."""
 import os
 import re
 import select
@@ -99,17 +99,26 @@ def run_mouse_ui(
     out.write(HIDE + MOUSE_ON + "\x1b[2J")
     out.flush()
     scroll = 0
+    last_paint = {"rows": None, "width": None, "height": None, "scroll": None}
 
-    def redraw():
+    def redraw(force=False):
         nonlocal scroll
         width, height = terminal_size(out.fileno(), default_cols, default_lines)
         rows = build_rows(width, height)
         scroll = clamp_scroll(scroll, len(rows), height)
-        paint_rows(out, rows, height, scroll)
+        if (
+            force
+            or rows != last_paint["rows"]
+            or width != last_paint["width"]
+            or height != last_paint["height"]
+            or scroll != last_paint["scroll"]
+        ):
+            paint_rows(out, rows, height, scroll)
+            last_paint.update(rows=rows, width=width, height=height, scroll=scroll)
         return rows, height
 
     try:
-        rows, height = redraw()
+        rows, height = redraw(force=True)
         next_draw = time.monotonic() + refresh_interval
         buf = ""
         while True:
@@ -148,7 +157,7 @@ def run_mouse_ui(
                         if 0 <= idx < len(rows) and rows[idx][1]:
                             if on_action(rows[idx][1], x, y):
                                 return
-                            rows, height = redraw()
+                            rows, height = redraw(force=True)
                             next_draw = time.monotonic() + refresh_interval
                 if "\x1b[B" in buf:
                     scroll = clamp_scroll(scroll + 1, len(rows), height)
