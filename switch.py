@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Lasso switch: a fullscreen, tap-driven switcher for phone/mobile tmux.
+"""tmux-lasso switch: a fullscreen, tap-driven switcher for phone/mobile tmux.
 
 Opened from the status-bar "switch" button via `display-popup -E`. Laid out like
-the desktop lasso panel — the same window tree and usage footer — plus a couple
+the desktop tmux-lasso panel — the same window tree and usage footer — plus a couple
 of switcher-only buttons:
 
   + new tab        -> open an empty tab (like Cmd+T)
@@ -199,9 +199,10 @@ def dispatch(action, session, state):
         state["pending"] = False
         return False
     if kind == "new-window":
-        win = tmux_api.run("new-window", "-t", action[1], "-P", "-F", "#{window_id}")
-        if win:
-            tmux_api.run("run-shell", "-b", f"{shlex.quote(TOGGLE)} add-window {shlex.quote(win)}")
+        tmux_api.run(
+            "run-shell", "-b",
+            f"{shlex.quote(TOGGLE)} new-window {shlex.quote(action[1])}",
+        )
         return True
     if kind == "agent":
         # ("agent", session, win_index, pane_id) from render.window_rows: jump
@@ -252,5 +253,5 @@ if __name__ == "__main__":
         try:
             main(sys.argv[1] if len(sys.argv) > 1 else None)
         except Exception as e:
-            sys.stderr.write(f"Lasso switch error: {e}\n")
+            sys.stderr.write(f"tmux-lasso switch error: {e}\n")
             time.sleep(3)

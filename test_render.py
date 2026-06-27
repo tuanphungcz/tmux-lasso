@@ -55,15 +55,17 @@ class RenderTests(unittest.TestCase):
                 "agent": "codex",
                 "ts": 100,
                 "space": "/tmp",
-                "space_label": "lasso",
+                "space_label": "tmux-lasso",
                 "branch": "",
             }]
         }
 
         rows = render._window_rows(12, "s", 160, windows, by_window, panes)
         line, _target = rows[1]
+        self.assertNotIn("blocked", _plain(rows[0][0]))
         self.assertIn("1:00", line)
         self.assertNotIn("blocked", line)
+        self.assertLessEqual(len(_plain(line)), 12)
 
     def test_header_exposes_sync_and_switch_buttons(self):
         _line, target = render.header(20)
@@ -167,7 +169,7 @@ class RenderTests(unittest.TestCase):
                 "agent": "codex",
                 "ts": 100,
                 "space": "/tmp",
-                "space_label": "lasso",
+                "space_label": "tmux-lasso",
                 "branch": "",
             }]
         }
@@ -185,7 +187,113 @@ class RenderTests(unittest.TestCase):
 
         self.assertEqual(targets[0], ("switch",))
         self.assertIn("─", lines[1])
-        self.assertEqual(targets[2], ("agent", "s", "1", "%123"))
+        self.assertIn(("agent", "s", "1", "%123"), targets)
+
+    def test_agent_row_uses_activity_summary(self):
+        panes = {
+            "123": {
+                "pane_id": "%123", "session": "s", "win_index": "1",
+                "win_name": "w", "pane_index": "0", "path": "/repo",
+                "visible": True, "win_current": True, "title": "",
+                "sidebar": False, "command": "codex",
+            }
+        }
+        windows = [{
+            "window_id": "@1", "session": "s", "win_index": "1",
+            "win_name": "w", "win_current": True,
+        }]
+        by_window = {
+            "1": [{
+                **panes["123"],
+                "state": "working",
+                "agent": "codex",
+                "summary": "migrate test suite",
+                "ts": 100,
+                "space": "/repo",
+                "space_label": "TextCut",
+                "branch": "main",
+            }]
+        }
+        rows = render._window_rows(44, "s", 160, windows, by_window, panes)
+        text = "\n".join(_plain(l) for l, _ in rows)
+        self.assertIn("co: migrate test suite", text)
+        self.assertIn("1:00", text)
+        self.assertNotIn("main", text)
+
+    def test_windows_in_same_space_group_under_folder(self):
+        panes = {
+            "1": {
+                "pane_id": "%1", "session": "s", "win_index": "1",
+                "win_name": "agent", "pane_index": "0", "path": "/repo",
+                "visible": True, "win_current": True, "title": "",
+                "sidebar": False, "command": "codex",
+            },
+            "2": {
+                "pane_id": "%2", "session": "s", "win_index": "2",
+                "win_name": "zsh", "pane_index": "0", "path": "/repo",
+                "visible": False, "win_current": False, "title": "",
+                "sidebar": False, "command": "zsh",
+            },
+        }
+        windows = [
+            {"window_id": "@1", "session": "s", "win_index": "1",
+             "win_name": "agent", "win_current": True},
+            {"window_id": "@2", "session": "s", "win_index": "2",
+             "win_name": "zsh", "win_current": False},
+        ]
+        by_window = {
+            "1": [{
+                **panes["1"],
+                "state": "working",
+                "agent": "codex",
+                "summary": "migrate test suite",
+                "ts": 100,
+                "space": "/repo",
+                "space_label": "TextCut",
+                "branch": "main",
+            }]
+        }
+        with mock.patch.object(render, "space_of", return_value=("/repo", "TextCut", "main")):
+            rows = render._window_rows(44, "s", 160, windows, by_window, panes)
+        text = "\n".join(_plain(l) for l, _ in rows)
+        self.assertIn("▾ TextCut", text)
+        self.assertIn("1 co: migrate test suite", text)
+        self.assertIn("2 zsh", text)
+        self.assertNotIn("└─ codex", text)
+
+    def test_single_agent_space_still_renders_as_folder_with_task(self):
+        panes = {
+            "3": {
+                "pane_id": "%3", "session": "s", "win_index": "3",
+                "win_name": "agent", "pane_index": "0", "path": "/repo",
+                "visible": True, "win_current": True, "title": "",
+                "sidebar": False, "command": "claude",
+            }
+        }
+        windows = [{
+            "window_id": "@3", "session": "s", "win_index": "3",
+            "win_name": "agent", "win_current": True,
+        }]
+        by_window = {
+            "3": [{
+                **panes["3"],
+                "state": "idle",
+                "agent": "claude",
+                "summary": 'Try "fix lint errors"',
+                "ts": 100,
+                "space": "/repo",
+                "space_label": "tuanphung-dev",
+                "branch": "main",
+            }]
+        }
+        rows = render._window_rows(44, "s", 160, windows, by_window, panes)
+        plain = [_plain(l) for l, _ in rows]
+        text = "\n".join(plain)
+        self.assertIn("▾ tuanphung-dev", plain[0])
+        self.assertNotIn("idle", plain[0])
+        self.assertIn("idle", plain[1])
+        self.assertNotIn("main", text)
+        self.assertIn('3 cc: Try "fix lint errors"', plain[1])
 
 
 class AgentLetterTests(unittest.TestCase):
@@ -195,7 +303,7 @@ class AgentLetterTests(unittest.TestCase):
                     "pane_id": pid, "pane_index": pidx, "path": "/tmp",
                     "win_current": True, "sidebar": False, "command": "claude",
                     "visible": vis, "state": "idle", "agent": "claude", "ts": 100,
-                    "space": "/tmp", "space_label": "lasso", "branch": ""}
+                    "space": "/tmp", "space_label": "tmux-lasso", "branch": ""}
         windows = [{"window_id": "@2", "session": "s", "win_index": "2",
                     "win_name": "w", "win_current": True}]
         members = [agent("%1", "0", False), agent("%2", "1", True)]
@@ -206,16 +314,17 @@ class AgentLetterTests(unittest.TestCase):
         panes, windows, by_window = self._multi()
         rows = render._window_rows(40, "s", 160, windows, by_window, panes)
         text = "\n".join(_plain(l) for l, _ in rows)
-        self.assertIn("A claude", text)
-        self.assertIn("B claude", text)
+        self.assertIn("A cc", text)
+        self.assertIn("B cc", text)
+        self.assertGreaterEqual(text.count("idle"), 2)
 
     def test_single_agent_window_has_no_letter(self):
         panes, windows, by_window = self._multi()
         by_window["2"] = by_window["2"][:1]      # collapse to one agent
         rows = render._window_rows(40, "s", 160, windows, by_window, panes)
         text = "\n".join(_plain(l) for l, _ in rows)
-        self.assertNotIn("A claude", text)
-        self.assertIn("claude", text)
+        self.assertNotIn("A cc", text)
+        self.assertIn("cc", text)
 
     def test_focused_agent_returns_letter_pane_and_count(self):
         panes, windows, by_window = self._multi()   # %2 is the visible (focused) pane

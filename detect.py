@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lasso: discover agent panes and detect each one's state (the "model" half).
+"""tmux-lasso: discover agent panes and detect each one's state (the "model" half).
 
   - query tmux for every live pane (tmux_panes)
   - for each non-sidebar pane decide which agent it runs and its state from the
@@ -20,6 +20,9 @@ import time
 import tmux_api
 
 SEP = tmux_api.SEP
+SUMMARY_MAX = 30
+SUMMARY_WORDS = 4
+SUMMARY_VERSION = 10
 
 
 def tmux_panes():
@@ -29,7 +32,7 @@ def tmux_panes():
     fmt = SEP.join([
         "#{pane_id}", "#{session_name}", "#{window_index}", "#{window_name}",
         "#{pane_index}", "#{pane_current_path}", vis, wcur, "#{pane_title}",
-        "#{@lasso_pane}", "#{pane_current_command}",
+        "#{@tmux_lasso_pane}", "#{pane_current_command}",
     ])
     try:
         out = tmux_api.run("list-panes", "-a", "-F", fmt)
@@ -59,6 +62,17 @@ def tmux_panes():
 SPINNER = re.compile(r"^[⠀-⣿]")   # braille spinner = working
 CODEX_STATUS = re.compile(r"(?im)\bgpt-[\w.:-]+\b.*\bcontext\s+\d+% left\b")
 WORKING_PROGRESS = re.compile(r"(?m)([■⬝•·.=])\1{3,}")
+# pi (pi-coding-agent): static "π - <cwd>" title, so working is read from the
+# body's spinner line (e.g. "⠴ Working..."). The capture group is the spinner
+# glyph -- pi can leave a FROZEN "Working..." on screen after it finishes, so we
+# only trust it as working while the glyph actually animates between ticks.
+PI_WORKING = re.compile(r"([⠀-⣿])\s*[Ww]orking\.\.\.")
+
+
+def _pi_spinner(body):
+    """The braille glyph in pi's '⠴ Working...' line, or '' if none."""
+    m = PI_WORKING.search(body or "")
+    return m.group(1) if m else ""
 SHELLS = {"zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh"}
 # A pane is re-captured at most this often. paint() runs on every click as well
 # as the periodic tick; throttling here decouples the (blocking) capture-pane
@@ -73,7 +87,7 @@ CAPTURE_TTL = 0.4
 # capture (wall, not monotonic, so it compares across processes) for the throttle.
 # ponytail: last-writer-wins on the file; a lost race costs one extra capture next
 # tick, never correctness.
-_SCRAPE_FILE = os.path.join(tempfile.gettempdir(), "lasso-agents.json")
+_SCRAPE_FILE = os.path.join(tempfile.gettempdir(), "tmux-lasso-agents.json")
 
 
 def load_scrape():
@@ -90,6 +104,7 @@ def _agentish_title(title):
     return bool(
         SPINNER.match(title or "")
         or (title or "").startswith("✳")
+        or (title or "").startswith("π")
         or "action required" in low
         or "codex" in low
         or "claude" in low
@@ -145,12 +160,18 @@ def detect_agent_kind(command, title, body):
         return "codex"
     low = body.lower()
     title_low = (title or "").lower()
-    if "claude" in title_low:
-        return "claude"
-    if "codex" in title_low:
-        return "codex"
-    if "action required" in title_low:
-        return "codex"
+    # When the foreground command is a plain shell, the OSC pane title is stale
+    # (set by a previous agent that has since exited). Skip title-based detection
+    # and fall through to body-based checks which reflect what's actually visible.
+    if c not in SHELLS:
+        if "claude" in title_low:
+            return "claude"
+        if "codex" in title_low:
+            return "codex"
+        if (title or "").startswith("π"):     # pi-coding-agent: "π - <cwd>" title
+            return "pi"
+        if "action required" in title_low:
+            return "codex"
     if CODEX_STATUS.search(body) or (
         "context " in low and "% left" in low and "esc to interrupt" in low
     ):
@@ -159,6 +180,8 @@ def detect_agent_kind(command, title, body):
         "esc to" in low or "allow command?" in low or "enter to submit" in low
     ):
         return "codex"
+    if "pi-coding-agent" in low:          # body fallback if the title is hidden
+        return "pi"
     if "bypass permissions" in low or "claude code" in low:
         return "claude"
     return None
@@ -230,35 +253,123 @@ def _state_codex(title, body):
     return "unknown"
 
 
+def _state_pi(title, body):
+    """pi-coding-agent. Its title stays "π - <cwd>", so working is read from the
+    body's "⠴ Working..." spinner line; a "[y/N]" readline prompt is a permission
+    block; otherwise it's sitting at the input box (idle)."""
+    low = body.lower()
+    if PI_WORKING.search(body) or "esc to interrupt" in low:
+        return "working"
+    if "[y/n]" in low:                 # rl.question("... [y/N] ") permission prompt
+        return "blocked"
+    return "idle"
+
+
 _STATE_FNS = {
     "claude": _state_claude,
     "codex": _state_codex,
+    "pi": _state_pi,
 }
 
 
+def _clean_summary_text(text):
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    text = text.strip(" \t│┃┆┊╭╮╰╯┌┐└┘─━═")
+    text = re.sub(r"^[>›❯$#%]\s*", "", text)
+    text = re.sub(r"^[•·●○◦*\-]\s*", "", text)
+    text = re.sub(r"^[⠀-⣿✳]\s*", "", text)
+    text = re.sub(r"\s*\((?:optional|volitelné)\)\s*$", "", text, flags=re.I)
+    text = text.strip()
+    if len(text) > SUMMARY_MAX:
+        cut = text[:SUMMARY_MAX - 1].rstrip()
+        word_cut = re.sub(r"\s+\S*$", "", cut).rstrip()
+        if len(word_cut) >= 12:
+            cut = word_cut
+        text = cut + "…"
+    return text
+
+
+def _summary_candidate(text):
+    text = _clean_summary_text(text)
+    if len(text) < 4:
+        return ""
+    low = text.lower()
+    noisy = (
+        "esc to interrupt", "press esc", "ctrl+c", "ctrl+", "context ",
+        "% left", "tokens", "claude code", "bypass permissions",
+        "enter to select", "esc to cancel", "tab/arrow", "arrow keys",
+        "↑/↓", "pgup/pgdn", "home/end", "working...", "working (",
+        "gpt-", "0.0 tps", "weekly limit", "how is claude doing this",
+    )
+    if any(s in low for s in noisy):
+        return ""
+    if re.search(r"https?://|www\.", low):
+        return ""
+    if re.search(r"\b(opus|sonnet|haiku)\b.*\bcontext\b", low):
+        return ""
+    if re.search(r"\bleft\s+\(\d+%\)", low):
+        return ""
+    if "│" in text and re.search(r"\b\d+(?:\.\d+)?s\b", low):
+        return ""
+    if low in {"codex", "claude", "pi", "ready", "action required", "yes", "no"}:
+        return ""
+    if re.match(r"^(~|/).*(\(\w+\)|/)", text):
+        return ""
+    if not re.search(r"[A-Za-z0-9]", text):
+        return ""
+    return text
+
+
+def _prompt_title(text):
+    """Stable title from the user's prompt: first few visible words, no guessing."""
+    text = _summary_candidate(text)
+    if not text:
+        return ""
+    words = re.findall(r"[A-Za-z0-9À-ž][A-Za-z0-9À-ž._+-]*", text)
+    return _clean_summary_text(" ".join(words[:SUMMARY_WORDS])) if words else text
+
+
+def activity_summary(kind, title, body):
+    """Best-effort short task title for the pane.
+
+    This intentionally stays heuristic and local: the daemon already captures
+    the visible pane body, so we extract the first prompt-like line and cache it.
+    Renderers never call capture-pane just to make labels prettier.
+    """
+    prompt = re.compile(r"^\s*(?:[>›❯])\s+(.+?)\s*$")
+    for line in (body or "").splitlines():
+        m = prompt.match(line)
+        if m:
+            cand = _prompt_title(m.group(1))
+            if cand:
+                return cand
+    return ""
+
+
 def _apply_state_transition(state, cached_state, meta):
+    """working->done, then clear done once the pane becomes visible/focused."""
     if state == "idle" and cached_state == "working":
         return "done"
     if state == "idle" and cached_state == "done":
         if meta.get("visible"):
-            return "idle"
+            return "idle"                 # no readable prompt: old visible rule
         return "done"
     return state
 
 
 def _merge_cached(kind, state, cached, meta, now):
     """Reconcile a freshly-detected (kind, state) against the cached entry and
-    return (state, ts): apply the working->done edge, carry the last real state
-    forward over a transient 'unknown', and keep the original ts while the state
-    is unchanged so the age timer keeps counting (a new/changed state resets it)."""
+    return (state, ts): apply the working->done edge, clear done when focused,
+    carry the last real state over a transient 'unknown', and keep ts while the
+    state is unchanged so the age timer keeps counting."""
     same = bool(cached) and cached.get("agent") == kind
-    if same:
-        state = _apply_state_transition(state, cached.get("state"), meta)
-    if state == "unknown" and same and cached.get("state") not in (None, "unknown"):
+    cached_state = cached.get("state") if same else None
+    new = _apply_state_transition(state, cached_state, meta)
+    if new == "unknown" and same and cached.get("state") not in (None, "unknown"):
         return cached["state"], cached["ts"]
-    if same and cached.get("state") == state:
-        return state, cached["ts"]
-    return state, now
+    if same and cached.get("state") == new:
+        return new, cached["ts"]
+    return new, now
 
 
 def refresh_scrape(panes, now):
@@ -277,13 +388,29 @@ def refresh_scrape(panes, now):
         # Plain shell with no agent-ish title: not worth capturing.
         if cmd in SHELLS and not cached and not _agentish_title(title):
             continue
-        if cached and wall - cached["cap_t"] < CAPTURE_TTL:
+        if cached and wall - cached.get("cap_t", 0.0) < CAPTURE_TTL:
             continue  # within the throttle window: keep the cached entry as-is
         body = capture_body(meta["pane_id"])
         kind = detect_agent_kind(cmd, title, body)
         state = _STATE_FNS[kind](title, body) if kind else None
+        # pi can leave a frozen "Working..." on screen after finishing, so only
+        # trust it as working while the spinner glyph actually changes tick-to-tick.
+        spin = _pi_spinner(body)
+        if kind == "pi" and state == "working" and spin and cached and spin == cached.get("spin"):
+            state = "idle"
+        if (
+            cached
+            and cached.get("agent") == kind
+            and cached.get("summary")
+            and cached.get("summary_v") == SUMMARY_VERSION
+        ):
+            summary = cached.get("summary", "")
+        else:
+            summary = activity_summary(kind, title, body)
         state, ts = _merge_cached(kind, state, cached, meta, now)
-        cache[key] = {"agent": kind, "state": state, "ts": ts, "cap_t": wall}
+        cache[key] = {"agent": kind, "state": state, "ts": ts,
+                      "cap_t": wall, "spin": spin,
+                      "summary": summary, "summary_v": SUMMARY_VERSION}
     # forget caches for panes that no longer exist, then publish for readers
     for dead in [k for k in cache if k not in panes]:
         cache.pop(dead, None)
@@ -305,7 +432,13 @@ def agents_from_cache(panes, now):
         kind, state = c.get("agent"), c.get("state")
         if not kind or state in (None, "unknown"):
             continue
-        agents.append({**meta, "state": state, "agent": kind, "ts": c.get("ts", now)})
+        agents.append({
+            **meta,
+            "state": state,
+            "agent": kind,
+            "ts": c.get("ts", now),
+            "summary": c.get("summary", ""),
+        })
     return agents
 
 

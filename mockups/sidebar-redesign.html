@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tmux-lasso Sidebar Redesign</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111318;
+    color: #c8cdd5;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1;
+    padding: 40px;
+  }
+
+  h1 { color: #e0e4ea; font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .subtitle { color: #5a6474; font-size: 12px; margin-bottom: 40px; }
+  .section-title { color: #6c7a8a; font-size: 14px; font-weight: 600; margin: 48px 0 24px; text-align: center; }
+
+  .grid {
+    display: flex;
+    gap: 48px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .col { display: flex; flex-direction: column; align-items: center; }
+  .label { color: #6c7a8a; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 10px; }
+  .desc { color: #4a5060; font-size: 10px; text-align: center; margin-bottom: 14px; max-width: 280px; line-height: 1.5; }
+
+  /* ── terminal panel ─────────────────── */
+  /* Each character cell = 1ch wide, 1 line tall */
+  /* No padding, no margin inside. Pure character grid. */
+
+  .term {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 20px;          /* row height = 20px */
+    background: #1e222a;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #2a2f38;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+    white-space: pre;           /* preserve spaces exactly */
+    color: #9ca3ad;
+    width: max-content;
+    min-width: 30ch;            /* 30 char minimum */
+  }
+
+  .term .r {
+    display: block;
+    height: 20px;
+    white-space: pre;
+    overflow: hidden;
+  }
+
+  /* colors matching our ANSI palette */
+  .c-reset   { color: #9ca3ad; }
+  .c-dim     { color: #4a5060; }
+  .c-bold    { font-weight: 600; }
+  .c-accent  { color: #6cb6e3; }
+  .c-white   { color: #e0e4ea; }
+  .c-gray    { color: #767d87; }
+  .c-faint   { color: #3a3f48; }
+  .c-green   { color: #9ccc7a; }
+  .c-yellow  { color: #d8b25e; }
+  .c-red     { color: #e0796a; }
+  .c-cyan    { color: #6cb6e3; }
+  .c-purple  { color: #b89ce0; }
+
+  /* background highlights */
+  .bg-hi     { background: #2a2f37; }
+  .bg-pill-idle    { background: #283a2a; color: #9ccc7a; font-weight:500; }
+  .bg-pill-working { background: #413b2b; color: #d8b25e; font-weight:500; }
+  .bg-pill-blocked { background: #422e2e; color: #e0796a; font-weight:500; }
+  .bg-pill-done    { background: #283944; color: #6cb6e3; font-weight:500; }
+
+  /* badge inline bg */
+  .bg-badge-cc { background: #332e22; color: #d8b25e; font-weight:600; }
+  .bg-badge-co { background: #243025; color: #9ccc7a; font-weight:600; }
+  .bg-badge-pi { background: #2d2538; color: #b89ce0; font-weight:600; }
+
+  /* focus bar character: ▎ in col 0 */
+  .c-bar     { color: #6cb6e3; }
+
+  /* usage bar chars */
+  .c-bar-fill { color: #9ccc7a; }
+  .c-bar-empty { color: #3c424a; }
+  .c-bar-amber { color: #d8b25e; }
+
+  .note-term { font-size: 10px; color: #4a5060; margin-top: 10px; text-align: center; line-height: 1.5; font-family: 'JetBrains Mono', monospace; }
+  .note-term em { color: #6c7a8a; font-style: normal; }
+</style>
+</head>
+<body>
+
+<h1>tmux-lasso sidebar redesign</h1>
+<p class="subtitle">True terminal rendering -- monospace grid, no padding, ANSI colors only</p>
+
+<!-- ═════════════════════════════════ -->
+<!-- CURRENT                           -->
+<!-- ═════════════════════════════════ -->
+
+<div class="section-title">Current</div>
+<div class="grid">
+<div class="col">
+  <div class="label">Current</div>
+  <div class="term"><!--
+--><span class="r"><span class="c-dim"> agents</span>          <span class="c-accent c-bold">sync  switch</span></span><!--
+--><span class="r"><span class="c-faint">──────────────────────────</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span><span class="c-accent">▾ </span><span class="c-bold c-white">tmux-lasso</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span>  <span class="c-accent">1</span> co: Explain this … <span class="bg-pill-idle"> idle </span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span>  <span class="c-accent">2</span> cc: Try "create a… <span class="bg-pill-idle"> idle </span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-dim">▾ </span><span class="c-bold">tuan-wiki</span></span><!--
+--><span class="r">   <span class="c-dim">3</span> cc: Jako to je mu… <span class="bg-pill-idle"> idle </span></span><!--
+--><span class="r">   <span class="c-dim">4</span> cc: Hele, a co kd… <span class="bg-pill-idle"> idle </span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-dim">▾ </span><span class="c-bold">tuanphung-dev</span></span><!--
+--><span class="r">   <span class="c-dim">5</span> cc: can you test … <span class="bg-pill-idle"> idle </span></span><!--
+--><span class="r"> </span><!--
+--></div>
+  <div class="note-term">Numbers on left, pills on right</div>
+</div>
+</div>
+
+<!-- ═════════════════════════════════ -->
+<!-- REDESIGN VARIANTS                 -->
+<!-- ═════════════════════════════════ -->
+
+<div class="section-title">Redesign Variants</div>
+
+<div class="grid">
+
+<!-- ─── V1: Status Dot + Logo + ⌘N ─── -->
+<div class="col">
+  <div class="label">V1 - Dot + Logo + ⌘N</div>
+  <div class="desc">Status dot front, agent diamond icon, shortcut number at end</div>
+  <div class="term"><!--
+--><span class="r"><span class="c-dim"> agents</span>            <span class="c-accent c-bold">↻ switch</span></span><!--
+--><span class="r"><span class="c-faint">────────────────────────────</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span><span class="c-bold c-white">tmux-lasso</span>          <span class="c-dim">main</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="c-green">◆</span> Explain this …    <span class="c-dim">⌘1</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="c-yellow">◆</span> Try "create a…    <span class="c-dim">⌘2</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuan-wiki</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="c-yellow">◆</span> Jako to je mu…    <span class="c-dim">⌘3</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="c-yellow">◆</span> Hele, a co kd…    <span class="c-dim">⌘4</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuanphung-dev</span>      <span class="c-dim">feat</span></span><!--
+--><span class="r">  <span class="c-yellow">●</span> <span class="c-yellow">◆</span> can you test …    <span class="c-dim">⌘5</span></span><!--
+--><span class="r"> </span><!--
+--></div>
+  <div class="note-term"><em>●</em> = status, <em>◆</em> = agent logo (color-coded)</div>
+</div>
+
+<!-- ─── V2: Badge + Dot Front ─── -->
+<div class="col">
+  <div class="label">V2 - Badge + Dot Front</div>
+  <div class="desc">Status dot, then agent badge [CC]/[CO], label, ⌘N at end</div>
+  <div class="term"><!--
+--><span class="r"><span class="c-dim"> agents</span>            <span class="c-accent c-bold">↻ switch</span></span><!--
+--><span class="r"><span class="c-faint">────────────────────────────</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span><span class="c-bold c-white">tmux-lasso</span>          <span class="c-dim">main</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="bg-badge-co">CO</span> Explain this …  <span class="c-dim">⌘1</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="bg-badge-cc">CC</span> Try "create a…  <span class="c-dim">⌘2</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuan-wiki</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="bg-badge-cc">CC</span> Jako to je mu…  <span class="c-dim">⌘3</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="bg-badge-cc">CC</span> Hele, a co kd…  <span class="c-dim">⌘4</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuanphung-dev</span>      <span class="c-dim">feat</span></span><!--
+--><span class="r">  <span class="c-yellow">●</span> <span class="bg-badge-cc">CC</span> can you test …  <span class="c-yellow">3:42</span></span><!--
+--><span class="r"> </span><!--
+--></div>
+  <div class="note-term"><em>●</em> status front, <em>CO</em>/<em>CC</em> badge, ⌘N or elapsed</div>
+</div>
+
+<!-- ─── V3: Tree + Badge Front ─── -->
+<div class="col">
+  <div class="label">V3 - Tree + Badge + Status</div>
+  <div class="desc">Status dot front, tree connectors, badge, label, ⌘N. All states.</div>
+  <div class="term"><!--
+--><span class="r"><span class="c-dim"> agents</span>            <span class="c-accent c-bold">↻ switch</span></span><!--
+--><span class="r"><span class="c-faint">────────────────────────────</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span><span class="c-bold c-white">tmux-lasso</span>          <span class="c-dim">main</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="c-faint">├─</span><span class="bg-badge-co">CO</span> Explain this … <span class="c-dim">⌘1</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="c-faint">└─</span><span class="bg-badge-cc">CC</span> Try "create a… <span class="c-dim">⌘2</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuan-wiki</span>           <span class="c-dim">main</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="c-faint">├─</span><span class="bg-badge-cc">CC</span> Jako to je mu… <span class="c-dim">⌘3</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="c-faint">└─</span><span class="bg-badge-cc">CC</span> Hele, a co kd… <span class="c-dim">⌘4</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuanphung-dev</span>      <span class="c-dim">feat</span></span><!--
+--><span class="r">  <span class="c-yellow">●</span> <span class="c-faint">└─</span><span class="bg-badge-cc">CC</span> can you test … <span class="c-yellow">3:42</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">my-api</span>              <span class="c-dim">dev</span></span><!--
+--><span class="r">  <span class="c-red">●</span> <span class="c-faint">└─</span><span class="bg-badge-cc">CC</span> <span class="c-red">Fix auth tok…</span> <span class="c-red">1:05</span></span><!--
+--><span class="r"> </span><!--
+--></div>
+  <div class="note-term">Tree + badge + all states (idle/working/blocked)</div>
+</div>
+
+<!-- ─── V4: Claude Code Style ─── -->
+<div class="col">
+  <div class="label">V4 - Claude Code Style</div>
+  <div class="desc">Closest to the Claude Code sidebar. Double-dot status (..), logo, ⌘N. Spacious.</div>
+  <div class="term"><!--
+--><span class="r"><span class="c-dim"> agents</span>              <span class="c-accent c-bold">switch</span></span><!--
+--><span class="r"><span class="c-faint">──────────────────────────────</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span><span class="c-bold c-white"> tmux-lasso</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span>  <span class="c-green">.</span><span class="c-dim">.</span> <span class="c-green">◆</span> Explain this …      <span class="c-dim">⌘1</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span>  <span class="c-green">.</span><span class="c-dim">.</span> <span class="c-yellow">◆</span> Try "create a…      <span class="c-dim">⌘2</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r">  <span class="c-bold c-gray">tuan-wiki</span></span><!--
+--><span class="r">   <span class="c-green">.</span><span class="c-dim">.</span> <span class="c-yellow">◆</span> Jako to je mu…      <span class="c-dim">⌘3</span></span><!--
+--><span class="r">   <span class="c-green">.</span><span class="c-dim">.</span> <span class="c-yellow">◆</span> Hele, a co kd…      <span class="c-dim">⌘4</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r">  <span class="c-bold c-gray">tuanphung-dev</span></span><!--
+--><span class="r">   <span class="c-yellow">.</span><span class="c-yellow">:</span> <span class="c-yellow">◆</span> can you test …      <span class="c-yellow">3:42</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r">  <span class="c-bold c-gray">my-api</span></span><!--
+--><span class="r">   <span class="c-red">.</span><span class="c-red">:</span> <span class="c-red">◆</span> Fix auth token…     <span class="c-red">1:05</span></span><!--
+--><span class="r"> </span><!--
+--></div>
+  <div class="note-term"><em>..</em> dots = status, <em>◆</em> = agent logo, <em>⌘N</em> = shortcut</div>
+</div>
+
+<!-- ─── V5: Minimal Clean ─── -->
+<div class="col">
+  <div class="label">V5 - Minimal Clean</div>
+  <div class="desc">Single status dot, no badge, just agent prefix in label. Cleanest look.</div>
+  <div class="term"><!--
+--><span class="r"><span class="c-dim"> agents</span>            <span class="c-accent c-bold">↻ switch</span></span><!--
+--><span class="r"><span class="c-faint">────────────────────────────</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span><span class="c-bold c-white">tmux-lasso</span>          <span class="c-dim">main</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="c-green">co:</span> Explain this …  <span class="c-dim">⌘1</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="c-yellow">cc:</span> Try "create a…  <span class="c-dim">⌘2</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuan-wiki</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="c-yellow">cc:</span> Jako to je mu…  <span class="c-dim">⌘3</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="c-yellow">cc:</span> Hele, a co kd…  <span class="c-dim">⌘4</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuanphung-dev</span>      <span class="c-dim">feat</span></span><!--
+--><span class="r">  <span class="c-yellow">●</span> <span class="c-yellow">cc:</span> can you test …  <span class="c-yellow">3:42</span></span><!--
+--><span class="r"> </span><!--
+--></div>
+  <div class="note-term">Simplest: <em>●</em> status + colored <em>cc:</em> prefix</div>
+</div>
+
+<!-- ─── V6: Hybrid (Recommended) ─── -->
+<div class="col">
+  <div class="label">V6 - Hybrid (Recommended)</div>
+  <div class="desc">Status dot front, agent badge, label, ⌘N end. Pill on workspace header only when working/blocked.</div>
+  <div class="term"><!--
+--><span class="r"><span class="c-dim"> agents</span>            <span class="c-accent c-bold">↻ switch</span></span><!--
+--><span class="r"><span class="c-faint">────────────────────────────</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span><span class="c-bold c-white">tmux-lasso</span>          <span class="c-dim">main</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="bg-badge-co">CO</span> Explain this …  <span class="c-dim">⌘1</span></span><!--
+--><span class="r bg-hi"><span class="c-bar">▎</span> <span class="c-green">●</span> <span class="bg-badge-cc">CC</span> Try "create a…  <span class="c-dim">⌘2</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuan-wiki</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="bg-badge-cc">CC</span> Jako to je mu…  <span class="c-dim">⌘3</span></span><!--
+--><span class="r">  <span class="c-green">●</span> <span class="bg-badge-cc">CC</span> Hele, a co kd…  <span class="c-dim">⌘4</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">tuanphung-dev</span> <span class="bg-pill-working"> 3:42 </span></span><!--
+--><span class="r">  <span class="c-yellow">●</span> <span class="bg-badge-cc">CC</span> can you test …  <span class="c-dim">⌘5</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"> <span class="c-bold c-gray">my-api</span>    <span class="bg-pill-blocked"> blocked </span></span><!--
+--><span class="r">  <span class="c-red">●</span> <span class="bg-badge-cc">CC</span> Fix auth tok…  <span class="c-red">1:05</span></span><!--
+--><span class="r"> </span><!--
+--><span class="r"><span class="c-faint">────────────────────────────</span></span><!--
+--><span class="r"><span class="c-dim"> claude</span> <span class="c-bar-fill">████</span><span class="c-bar-empty">░░░░</span> <span class="c-dim">50%</span></span><!--
+--><span class="r"><span class="c-dim"> codex</span>  <span class="c-bar-amber">██</span><span class="c-bar-empty">░░░░░░</span> <span class="c-dim">25%</span></span><!--
+--></div>
+  <div class="note-term"><em>Recommended.</em> Dot + badge + label + ⌘N<br>Pill on header only when not idle.<br>Usage at bottom with block chars.</div>
+</div>
+
+</div><!-- /grid -->
+
+</body>
+</html>

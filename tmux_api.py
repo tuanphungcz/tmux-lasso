@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared tmux + small shared-file helpers for Lasso."""
+"""Shared tmux + small shared-file helpers for tmux-lasso."""
 import json
 import os
 import subprocess

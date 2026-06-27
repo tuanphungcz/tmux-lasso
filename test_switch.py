@@ -134,12 +134,12 @@ class SwitchFattenTests(unittest.TestCase):
         # a header (no ├/└) followed by a tree child gets NO blank twin, else a
         # gap opens between the window and its first agent; agents still fatten.
         rows = switch._fatten([
-            ("1 lasso", ("agent", "s", "1", "%1")),     # window header
+            ("1 tmux-lasso", ("agent", "s", "1", "%1")),     # window header
             ("├─ claude", ("agent", "s", "1", "%2")),
             ("└─ claude", ("agent", "s", "1", "%3")),
         ], 40)
         self.assertEqual(rows, [
-            ("1 lasso", ("agent", "s", "1", "%1")),     # tight to its child
+            ("1 tmux-lasso", ("agent", "s", "1", "%1")),     # tight to its child
             ("├─ claude", ("agent", "s", "1", "%2")),
             ("", ("agent", "s", "1", "%2")),
             ("└─ claude", ("agent", "s", "1", "%3")),
@@ -186,6 +186,14 @@ class SwitchDispatchTests(unittest.TestCase):
              mock.patch("switch.tmux_api.run") as run:
             switch._kill_window("s", "1")
         self.assertFalse(any(c.args[:1] == ("kill-window",) for c in run.call_args_list))
+
+    def test_new_window_uses_toggle_helper(self):
+        with mock.patch("switch.tmux_api.run") as run:
+            close = switch.dispatch(("new-window", "work"), "work", {})
+        self.assertTrue(close)
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[:2], ("run-shell", "-b"))
+        self.assertIn("toggle.sh new-window work", run.call_args.args[2])
 
 
 if __name__ == "__main__":
