@@ -2,7 +2,7 @@
 
 A tiny tmux sidebar that shows every AI agent (Claude Code, Codex, ...) and its status at a glance — and pings you when one is done, so you stop babysitting tabs.
 
-[![Watch the demo](https://img.youtube.com/vi/VfRINxgMcHQ/maxresdefault.jpg)](https://youtu.be/VfRINxgMcHQ)
+[![Watch on YouTube](video-thumbnail.jpg)](https://youtu.be/VfRINxgMcHQ)
 
 **[Read the full story on the blog →](https://tuanphung.dev/writing/tmux-lasso/)**
 
