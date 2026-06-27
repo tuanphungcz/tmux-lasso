@@ -1,10 +1,25 @@
 # tmux-lasso
 
-An always-on sidebar pane in every tmux window, auto-sized to the client width
-and hidden on phone-width clients. Toggle with `prefix + g`.
+A tiny tmux sidebar that shows every AI agent (Claude Code, Codex, ...) and its status at a glance — and pings you when one is done, so you stop babysitting tabs.
 
-No Claude Code hooks, no `settings.json` edits — tmux-lasso reads session state by
-scraping the panes, so install is just the plugin line below.
+[![Watch the demo](https://img.youtube.com/vi/VfRINxgMcHQ/maxresdefault.jpg)](https://youtu.be/VfRINxgMcHQ)
+
+**[Read the full story on the blog →](https://tuanphung.dev/writing/tmux-lasso/)**
+
+## What it does
+
+- **Always-on sidebar** — lists every agent grouped by repo, with a status pill (idle / working / done)
+- **Auto-detection** — new Claude Code or Codex agents appear in the list on their own, no setup per agent
+- **Sound alerts** — plays a sound when an agent finishes or needs your input
+- **Usage tracking** — shows Claude Code and Codex daily usage at the bottom
+- **Phone-friendly** — collapses on narrow screens; drive everything from SSH on your phone
+- **No new keybindings** — uses your existing tmux shortcuts, toggle with `prefix + g`
+
+![The tmux-lasso sidebar panel](panel.png)
+
+No hooks, no `settings.json` edits — tmux-lasso reads session state by scraping the panes, so install is just the plugin line below.
+
+Inspired by [herdr](https://herdr.dev/) — I loved the "see every agent at once" idea and built a small version on top of tmux.
 
 ## Requirements
 
@@ -44,22 +59,19 @@ set -g @tmux_lasso_mobile_width 90  # below this client width: hide sidebar (tap
 
 ## Sound on finish (optional)
 
-Play a short sound when an agent changes state, so you know without watching the
-screen. The daemon already tracks each session; it plays a sound on two edges
-(fired detached, so the loop never stalls):
+Play a short sound when an agent changes state:
 
-- **done** — an agent finished (`working → done`) → `@tmux_lasso_sound`
-- **needs input** — an agent is blocked waiting on you → `@tmux_lasso_sound_request`
+- **done** — agent finished (`working → done`) → `@tmux_lasso_sound`
+- **needs input** — agent is blocked waiting on you → `@tmux_lasso_sound_request`
 
 ```tmux
-set -g @tmux_lasso_announce on                                   # off by default
-set -g @tmux_lasso_sound         ~/.config/tmux-lasso/done.mp3        # any file `afplay` can play
+set -g @tmux_lasso_announce on
+set -g @tmux_lasso_sound         ~/.config/tmux-lasso/done.mp3
 set -g @tmux_lasso_sound_request ~/.config/tmux-lasso/request.mp3
 ```
 
 Unset sounds fall back to `/System/Library/Sounds/Glass.aiff`. Toggle live with
-`tmux set -g @tmux_lasso_announce on|off`. Restart the daemon (toggle tmux-lasso off and
-on) once after upgrading so the new code runs.
+`tmux set -g @tmux_lasso_announce on|off`.
 
 ## Tests
 
